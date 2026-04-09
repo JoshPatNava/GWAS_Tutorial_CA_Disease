@@ -1,0 +1,237 @@
+---
+title: "JoshsTutDoc"
+format: html
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+
+system("plink --version")
+
+```
+
+```{r}
+head(fam <- fread('data/penncath.fam'))
+```
+
+```{r}
+
+clinical <- fread('data/penncath.csv')
+clinical
+
+```
+
+```{r}
+
+bim <- fread('data/penncath.bim')
+head(bim)
+
+```
+```{r}
+
+library(bigsnpr)
+library(bigstatsr)
+```
+
+
+```{r}
+snp_readBed("data/penncath.bed")
+```
+
+
+```{r}
+
+penncath <- snp_attach("data/penncath.rds")
+str(penncath)
+```
+
+
+```{r}
+penncath$map$chromosome |> table()
+
+```
+
+
+```{r}
+class(penncath$genotypes)
+
+?bigstatsr::big_counts
+
+big_counts(penncath$genotypes, ind.row = 1:10, ind.col = 1:10)
+
+snp_stats <- big_counts(penncath$genotypes)
+dim(snp_stats)
+
+boxplot(snp_stats[4,])
+```
+
+
+```{r}
+summary(snp_stats[4,])
+```
+
+
+```{r}
+sample_stats <- big_counts(penncath$genotypes, byrow = TRUE)
+sample_stats[, 1:10]
+boxplot(sample_stats[4,])
+```
+
+
+```{r}
+summary(sample_stats[4,])
+```
+
+
+```{r}
+allele_dat <- sweep(x = sample_stats[1:3,], 
+                    MARGIN = 1,
+                    STATS = c(0, 1, 0),
+                    FUN = "*") |> colSums()
+
+boxplot(allele_dat/ncol(snp_stats))
+```
+
+
+```{r}
+hist(allele_dat/ncol(snp_stats),
+     main = "Zygosity",
+     xlab = "Proportion of samples which are heterozygous")
+```
+
+
+```{r}
+hist(snp_stats[1,])
+```
+
+
+```{r}
+summary(snp_stats[1,])
+```
+
+
+```{r}
+path_to_qc_penncath <- snp_plinkQC(
+  plink.path = "~/bin/plink", 
+  prefix.in = "data/penncath",
+  prefix.out = "data/qc_penncath", 
+  maf = 0.01
+)
+```
+
+
+```{r}
+
+system("plink --bfile data/penncath --make-bed --out data/penncath_clean")
+
+```
+
+
+```{r}
+path_to_qc_penncath_bed <- snp_plinkQC(
+  plink.path = "~/bin/plink", 
+  prefix.in = "data/penncath_clean", 
+  prefix.out = "data/qc_penncath", 
+  maf = 0.01, 
+  geno = 0.1, 
+  mind = 0.1, 
+  hwe = 1e-10, 
+  autosome.only = TRUE
+)
+```
+
+
+```{r}
+qc_file_path <- snp_readBed(bedfile = path_to_qc_penncath_bed)
+
+qc <- snp_attach(qc_file_path)
+
+dim(qc$genotypes)
+```
+
+
+```{r}
+class(penncath$genotypes)
+first_10_snps <- penncath$genotypes[,1:10]
+class(first_10_snps); dim(first_10_snps)
+head(first_10_snps)
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
