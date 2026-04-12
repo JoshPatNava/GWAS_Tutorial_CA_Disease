@@ -6,7 +6,6 @@ library(dplyr)
 library(ggplot2)
 library(bigsnpr)
 library(bigstatsr)
-library(corrplot)
 ```
 
 ### Check that plink works; If not download [here](https://www.cog-genomics.org/plink/1.9/)
@@ -237,6 +236,76 @@ corrplot::corrplot(K[1:50, 1:50] * (1/ncol(qc$geno_imputed)),
 ```
 No quilt-like pattern means that individual samples are only related to themselves
 
+# Analysis
+
+Before starting we need to combine the clinical data and the data from the fam file.
+```{r}
+clinical <- fread("data/penncath.csv")
+
+qc$fam <- dplyr::full_join(x = qc$fam,
+                           y = clinical,
+                           by = c('family.ID' = 'FamID'))
+```
+
+We also want to load the pcs from the population structure
+
+```{r}
+pc <- sweep(svd_X$u, 2, svd_X$d, "*")
+
+# Give each pc a name using the paste0 function
+names(pc) <- paste0("PC", 1:ncol(pc))
+```
+
+### Visualizing the results
+
+We can use a Manhattan or qq-plot. Both show the SNPs with the smallest p-value
+```{r}
+# Q-Q plot of the object
+qq <- bigsnpr::snp_qq(qc.gwas)
+(qq)
+```
+Points off the red line show there is some association. Not sure what is a part of the association yet
+
+Use the manhattan plot to see where the association comes from
+
+```{r}
+#Colors
+viridis22 <- c(rep(c("#fde725", "#90d743", "#35b779", "#21918c", "#31688e", 
+                "#443983", "#440154"), 3), "#fde725")
+
+manh <- snp_manhattan(gwas = qc.gwas,
+              infos.chr = qc$map$chromosome, # The chromosome where each SNP is
+              infos.pos = qc$map$physical.pos, #The location of each SNP within a chromosome
+              colors = viridis22)
+# Adding annotations to the graph
+signif_threshold <- 5e-8 
+suggest_threshold <- 5e-6 
+
+(manh + 
+  geom_hline(yintercept = -log10(signif_threshold),
+             # note: plot y-axis is on -log10 scale 
+             color = "#35b779",
+             lty = 2) + 
+  geom_hline(yintercept = -log10(suggest_threshold),
+             color = "#443983",
+             lty = 2)
+)
+```
+## Testing
+
+Using the first 5 PCs since they had the most significant influence
+This test uses a logistic regression model which uses sex and age as a predictor
+
+```{r}
+qc.gwas <- big_univLogReg(X = qc$geno_imputed,
+                           y01.train = qc$fam$CAD,
+                           covar.train = pc[,1:5],
+                           ncores = nb_cores())
+
+saveRDS(object = qc.gwas, file = "data/gwas.rds")
+```
+
+
 # References
 
 ## File types
@@ -256,7 +325,11 @@ No quilt-like pattern means that individual samples are only related to themselv
 -   big_counts() - counts each loci and the number of each type of SNP
     -   types: 0 - no snps from either parent, 1 - 1 snp from a parent, 2 - both parents gave snp, NA - bad read (should clean out)
 -   sweep() - remove a statistic from an array
-    -   Args:array,Margin(how often to look for statistic being swept), Stats(the statisitc being swept, is input for FUN), Fun( function to do the sweeping)
+    -   Args:
+      - array
+      -  Margin(how often to look for statistic being swept)
+      -  Stats(the statisitc being swept, is input for FUN)
+      -  Fun( function to do the sweeping)
 -   colSums() - go through each column and add the rows together
 -   snp_plinkQC() - function from bigsnpr that runs plink
 -   bigsnpr::snp_fastImputeSimple() - simple function for imputation
