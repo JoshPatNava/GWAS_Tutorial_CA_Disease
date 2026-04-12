@@ -1,0 +1,282 @@
+# Install Packages
+
+```{r}
+library(data.table) 
+library(dplyr) 
+library(ggplot2)
+library(bigsnpr)
+library(bigstatsr)
+library(corrplot)
+```
+
+### Check that plink works; If not download [here](https://www.cog-genomics.org/plink/1.9/)
+
+```{r}
+system("~/Downloads/plink --version")
+```
+
+# Filtering/QC/Data viewing
+
+## How to see where SNPs are - chromosome wise
+
+```{r}
+#Get penncath object
+penncath <- snp_attach("data/penncath.rds")
+
+penncath$map$chromosome |> table()
+```
+
+## Checking for missing data
+
+snp_stats contains a table with counts for each read location and the SNP type. We want to get rid of the locations with high amounts of NAs. Each row is the SNP type. Row 4 is NAs
+
+```{r}
+snp_stats <- big_counts(penncath$genotypes)
+#Label columns of snp_stats
+
+colnames(snp_stats) <- penncath$map$marker.ID
+
+boxplot(snp_stats[4,]) 
+```
+
+### Can also check by person
+
+```{r}
+counts_per_person <- big_counts(penncath$genotypes, byrow = TRUE)
+```
+
+Ex: The first individual had 30,818 bad reads
+
+### Get summary of bad reads per person to know if any should be excluded
+
+```{r}
+summary(counts_per_person[4,])
+```
+
+## Check for heterozigosity
+
+Even if a read is good, there should be a good mix of homo (A/A or B/B) and hetero (A/B) calls. We need to look through each sample and see how how the number of hetero (1s) compare from each sample. That number is fed over the number of snps into the boxplot.
+
+```{r}
+allele_dat <- sweep(x = counts_per_person[1:3,], 
+                    # ^ leave off 4th row -- don't count NAs here
+                    MARGIN = 1,
+                    # Look for 
+                    STATS = c(0, 1, 0),
+                    FUN = "*") |> colSums()
+
+boxplot(allele_dat/ncol(snp_stats))
+```
+
+### Histogram as well
+
+```{r}
+hist(allele_dat/ncol(snp_stats))
+```
+
+## Getting rid of SNPs with low variation
+
+Some SNPs happen very rarely, and likely aren't relevant in affecting the resulting phenotype
+
+Look at frequency of each site as a 0
+
+```{r}
+hist(snp_stats[1,])
+summary(snp_stats[1,])
+```
+
+There are some alleles that are minor enough to get rid of.
+
+## HWE
+
+Check for SNPS way out of harvey weinburg equilibrium. Like really far.
+
+## Check for relatedness
+
+The assumption is that the samples are independent and by having samples who are related that assumption is broken and can skew analysis.
+
+## Check for sex sameness
+
+There's a chance that a sample is mislabeled. Usually can compare what is in X chromosome and what's in fam file. Don't have X chromosome for this data.
+
+## Checking for LD
+
+Linkage disequilibrium is where the odds of a certain SNP are different since it is near another base pair site. Bigsnpr has ways of accounting for it. We don't use it though.
+## Actually filtering
+
+Before doing that need to reformat to a bed file for analysis.
+
+```{r}
+# Only run once to get a bed file
+#| include: false
+
+system("plink --bfile data/penncath --make-bed --out data/penncath_clean")
+```
+
+This code runs plink, which will filter the data. This does the individual data cleaning steps done above in one command.
+
+```{r}
+path_to_qc_penncath_bed <- snp_plinkQC(
+  plink.path = "~/.local/bin/plink", # you may need to change this according to your machine!
+  prefix.in = "data/penncath_clean", # input data
+  prefix.out = "data/qc_penncath", # creates *new* rds with quality-controlled data
+  maf = 0.01, # filter out SNPs with MAF < 0.01
+  geno = 0.1, # filter out SNPs missing more than 10% of data
+  mind = 0.1, # filter out samples missing more than 10% of data,
+  hwe = 1e-10, # filter out SNPs that have p-vals below this threshold for HWE test
+  autosome.only = TRUE # we want chromosomes 1-22 only
+)
+
+# Put the QC data into a variable to work with
+  qc_file_path <- snp_readBed(bedfile = path_to_qc_penncath_bed)
+
+  qc <- snp_attach(qc_file_path)
+
+```
+
+# Imputation
+
+Predicting missing values based on patterns or from other data sets.
+
+## Determine call rate at each SNP
+
+```{r}
+#Get new stats for qc data
+qc_stats <- big_counts(qc$genotypes)
+colnames(qc_stats) <- qc$map$marker.ID
+
+call_rates <- colSums(qc_stats[1:3,]) / colSums(qc_stats)
+
+# Look at rates for first few sites in QCd data
+head(call_rates)
+```
+
+## Do the imputation
+
+```{r}
+# impute based on mode
+# Create new attribute within qc that has the imputed data
+qc$geno_imputed <- snp_fastImputeSimple(Gna = qc$genotypes,
+                                          method = "mode",
+                                          ncores = nb_cores())
+
+# save imputed values 
+qc$geno_imputed$code256 <- bigsnpr::CODE_IMPUTE_PRED
+
+# look to see that imputation was successful:
+imp_snp_stats <- big_counts(X.code = qc$geno_imputed)
+imp_snp_stats[,1:5] # all 0s in NA row 
+
+# Save the imputed data for later use - saved to the disk
+qc <- bigsnpr::snp_save(qc)
+```
+
+# Population Structure
+
+How members of a population will share common alleles that are inherited from an ancestor. Can influence a GWAS depending on the structure of a study. Need to check to verify that it is not affecting analysis
+
+## Using Principal Component Analysis to find population structure
+
+Learn more about PCA [here](https://stats.stackexchange.com/questions/2691/making-sense-of-principal-component-analysis-eigenvectors-eigenvalues).
+
+```{r}
+svd_X <- big_SVD(qc$geno_imputed, # must have imputed data
+                 big_scale(), # centers and scales data -- REALLY IMPORTANT! 
+                 k = 10 # use 10 PCs for now -- can ask for more if needed
+                 )
+
+saveRDS(svd_X, "data/svd_X.rds")
+
+```
+
+### Plot the data on a scree plot
+
+This graph tells us how much variance a primary component accounts for
+
+```{r}
+plot(svd_X)
+```
+Based on the scree plot we can then compare components that contribute the highest variance
+
+```{r}
+plot(svd_X, type = "scores")
+```
+
+## Determining cause for the seperation
+
+### Gender
+
+```{r}
+#Load in the clinical data - we use the mutate function to change the sex and CAD variables to a factor
+clinical <- fread('data/penncath.csv') |>
+  mutate(across(.cols = c(sex, CAD),
+                .fns = as.factor))
+
+plot(svd_X, type = "scores") + 
+  aes(colour = clinical$sex) +
+  labs(color = "sex")
+```
+
+## Looking for family relatedness
+
+Can find relationships through realized relationships matrix (1/p *𝐗𝐗^⊤).
+
+```{r}
+# Take the cross product of the matrix
+
+K <- big_tcrossprodSelf(X = qc$geno_imputed,
+                        fun.scaling = big_scale())
+
+saveRDS(K, 'data/K.rds')
+
+# Plot with corrplot
+
+corrplot::corrplot(K[1:50, 1:50] * (1/ncol(qc$geno_imputed)),
+         is.corr = FALSE,
+         tl.pos = "n")
+```
+No quilt-like pattern means that individual samples are only related to themselves
+
+# References
+
+## File types
+
+-   Fam - has participant data - each row is a participant
+-   Bim - has actual info on SNPs
+-   Bed - has actual genotype data - encoded in binary - use w/ bigsnpr
+-   Each row is an individual
+-   Rds - R format for storing R objects
+
+## Useful functions
+
+-   fread() - read a file - **don't use w/ bed files** - output can be put into R object
+    -   For bed use snp_readBed() - output is bk file which is used for loading data into R
+-   snp_attach() - loads data into an R object - uses both rds and bk file **make sure both have same file name**
+-   str() - tells you the structure of an object - includes fields within an object
+-   big_counts() - counts each loci and the number of each type of SNP
+    -   types: 0 - no snps from either parent, 1 - 1 snp from a parent, 2 - both parents gave snp, NA - bad read (should clean out)
+-   sweep() - remove a statistic from an array
+    -   Args:array,Margin(how often to look for statistic being swept), Stats(the statisitc being swept, is input for FUN), Fun( function to do the sweeping)
+-   colSums() - go through each column and add the rows together
+-   snp_plinkQC() - function from bigsnpr that runs plink
+-   bigsnpr::snp_fastImputeSimple() - simple function for imputation
+    -   Arguments
+        -   Gna - genomic data
+        -   mehtod - various modes for deciding value
+            -   mode - use most common value for a SNP
+            -   mean0 - use average value rounded to an integer
+            -   mean2 - like mean0 but rounds to 2 decimal places
+            -   random
+        -   ncores - how many cpu cores to use
+-   nb_cores - returns number of recommended cores to use
+-   big_SVD() - does a partial SVD on out data
+    - X - our data
+    - fun.scaling - a function to center and scale data
+    - k - number of vectors to compute
+-   saveRDS() - save an R object to a file
+
+## Terminology
+
+-   call rate - proportion of a base pair location that has a value
+-   cryptic relatedness - when two samples have more similarity than assumed. May be due to an unknown familial relationship.
+-   Singular value decomposition (SVD) - breaking a matrix into three matrices that give context on the data
